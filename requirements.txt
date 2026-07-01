@@ -4,3 +4,5 @@ pdf2image
 pytesseract
 Pillow
 requests
+pandas
+openpyxl
