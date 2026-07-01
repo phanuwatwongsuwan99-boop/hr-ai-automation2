@@ -6,6 +6,7 @@ from docx import Document
 from PIL import Image
 import pytesseract
 from pdf2image import convert_from_path
+import pandas as pd  # เพิ่มสำหรับการจัดการ Excel
 
 # ==========================================
 # CONFIG & INITIALIZATION
@@ -19,36 +20,48 @@ for folder in [TEMPLATE_DIR, OUTPUT_DIR]:
 
 st.set_page_config(page_title="HR AI Document Automation", layout="wide")
 st.title("📄 ระบบจัดการและเขียนเอกสาร HR อัตโนมัติด้วย AI")
-st.subheader("ลดงานคีย์ข้อมูล 100% ด้วย Open-Source LLM (ใช้งานฟรี ไม่มีลิมิต)")
+st.subheader("รองรับไฟล์ Input: PDF, JPG, PNG และ Excel (.xlsx)")
 
 # ==========================================
 # FUNCTIONS
 # ==========================================
 
-# 1. ฟังก์ชันดึงข้อความจากไฟล์ (OCR)
+# ปรับปรุงฟังก์ชันให้รองรับไฟล์ Excel (.xlsx) เพิ่มเติม
 def extract_text_from_file(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     text = ""
+    
     if ext in ['.jpg', '.jpeg', '.png']:
+        # อ่านข้อความจากรูปภาพด้วย OCR
         text = pytesseract.image_to_string(Image.open(file_path), lang='tha+eng')
     elif ext == '.pdf':
+        # แปลง PDF เป็นรูปภาพแล้วทำ OCR
         pages = convert_from_path(file_path)
         for page in pages:
             text += pytesseract.image_to_string(page, lang='tha+eng') + "\n"
+    elif ext == '.xlsx':
+        # อ่านไฟล์ Excel โดยตรง (ไม่ต้องผ่าน OCR) และแปลงข้อมูลตารางเป็นข้อความให้ AI เข้าใจง่าย
+        try:
+            df = pd.read_excel(file_path)
+            text = "ข้อมูลจากไฟล์ Excel:\n"
+            text += df.to_string(index=False) # แปลงตารางเป็น Text string
+        except Exception as e:
+            st.error(f"ไม่สามารถอ่านไฟล์ Excel ได้: {e}")
+            
     return text
 
-# 2. ฟังก์ชันเรียก Open-Source AI (Ollama) เพื่อดึงข้อมูลเป็น JSON
+# ฟังก์ชันเรียก Open-Source AI (Ollama หรือ API บน Cloud)
 def extract_data_with_ai(raw_text, keys_needed):
-    url = "http://localhost:11434/api/generate"
+    # หมายเหตุ: หากรันบน Streamlit Cloud ให้เปลี่ยน URL นี้เป็น API ของผู้ให้บริการที่ใช้ (เช่น Gemini API)
+    url = "http://localhost:11434/api/generate" 
     
-    # สร้าง Prompt บังคับให้ AI ตอบกลับมาเป็น JSON ตาม Key ที่ระบุเท่านั้น
     prompt = f"""
-    คุณคือผู้ช่วย HR อัจฉริยะ หน้าที่ของคุณคืออ่านข้อความที่ได้จากการสแกนเอกสารดังต่อไปนี้ 
+    คุณคือผู้ช่วย HR อัจฉริยะ หน้าที่ของคุณคืออ่านข้อความ/ข้อมูลตารางต่อไปนี้ 
     แล้วดึงข้อมูลสำคัญออกมาตามหัวข้อที่กำหนดให้ในรูปแบบ JSON object เท่านั้น ห้ามเขียนคำอธิบายอื่นใดเพิ่มเติม
 
     หัวข้อที่ต้องดึง (Keys): {keys_needed}
 
-    ข้อความจากเอกสาร:
+    ข้อมูลเอกสารต้นทาง:
     \"\"\"
     {raw_text}
     \"\"\"
@@ -57,7 +70,7 @@ def extract_data_with_ai(raw_text, keys_needed):
     """
     
     data = {
-        "model": "typhoon-m1", # หรือ llama3.1
+        "model": "typhoon-m1",
         "prompt": prompt,
         "stream": False,
         "format": "json"
@@ -71,18 +84,16 @@ def extract_data_with_ai(raw_text, keys_needed):
         st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ AI: {e}")
         return None
 
-# 3. ฟังก์ชันแทนที่คำใน Word Document (.docx)
+# ฟังก์ชันแทนที่คำใน Word Document (.docx)
 def fill_template(template_path, data, output_path):
     doc = Document(template_path)
     
-    # วนลูปค้นหาและแทนที่ข้อความในย่อหน้า (Paragraphs)
     for p in doc.paragraphs:
         for key, value in data.items():
-            placeholder = f"{{{{{key}}}}}" # หาตัวแปรในรูปแบบ {{key}}
+            placeholder = f"{{{{{key}}}}}"
             if placeholder in p.text:
                 p.text = p.text.replace(placeholder, str(value))
                 
-    # วนลูปค้นหาและแทนที่ข้อความในตาราง (Tables)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -95,12 +106,10 @@ def fill_template(template_path, data, output_path):
     doc.save(output_path)
 
 # ==========================================
-# UI SIDEBAR: TEMPLATE MANAGEMENT (ข้อ 2 & ข้อ 5)
+# UI SIDEBAR: TEMPLATE MANAGEMENT
 # ==========================================
 with st.sidebar:
     st.header("⚙️ จัดการเทมเพลตบริษัท")
-    
-    # อัปโหลดเทมเพลตใหม่
     uploaded_tpl = st.file_uploader("อัปโหลดเทมเพลตใหม่ (.docx)", type=["docx"])
     if uploaded_tpl is not None:
         tpl_path = os.path.join(TEMPLATE_DIR, uploaded_tpl.name)
@@ -111,7 +120,6 @@ with st.sidebar:
 
     st.divider()
     
-    # ลบเทมเพลต
     st.subheader("🗑️ ลบเทมเพลตที่ไม่ใช้")
     all_tpls = os.listdir(TEMPLATE_DIR)
     if all_tpls:
@@ -120,35 +128,31 @@ with st.sidebar:
             os.remove(os.path.join(TEMPLATE_DIR, tpl_to_delete))
             st.success(f"ลบ {tpl_to_delete} สำเร็จ")
             st.rerun()
-    else:
-        st.caption("ยังไม่มีเทมเพลตในระบบ")
 
 # ==========================================
-# MAIN UI: RUNNING AUTOMATION (ข้อ 1, 3, 4)
+# MAIN UI: RUNNING AUTOMATION
 # ==========================================
 available_templates = os.listdir(TEMPLATE_DIR)
 
 if not available_templates:
     st.info("💡 เริ่มต้นใช้งานโดยการอัปโหลดไฟล์เทมเพลตเอกสารที่เมนูด้านซ้ายก่อนครับ")
 else:
-    # 1. ขั้นตอนเลือกเทมเพลตที่จะใช้งาน (ข้อ 3)
     st.header("Step 1: เลือกเทมเพลตและระบุฟิลด์ข้อมูล")
     selected_template = st.selectbox("เลือกเทมเพลตเอกสารที่จะใช้:", available_templates, key="main_select")
     
-    # ให้ HR กำหนดหัวข้อที่อยู่ในเทมเพลตนั้นๆ (เพื่อบอก AI ให้ดึงได้ตรงจุด)
-    # เช่น ในไฟล์ Word มีพิมพ์ว่า {{Name}}, {{ID}}, {{Salary}}
-    st.markdown("*ระบุชื่อตัวแปรที่อยู่ในไฟล์เทมเพลต (คั่นด้วยเครื่องหมายจุลภาค `,`)*")
     fields_input = st.text_input("ตัวแปรที่ต้องการให้ AI เติมลงในเอกสาร:", "Name, ID_Number, Address, Position, Salary")
     fields_list = [f.strip() for f in fields_input.split(",")]
 
     st.divider()
 
-    # 2. ขั้นตอนอัปโหลดเอกสารดิบนำเข้า (ข้อ 4)
     st.header("Step 2: อัปโหลดเอกสาร Input ต้นทาง")
-    input_file = st.file_uploader("อัปโหลดเอกสารต้นทาง (เช่น รูปถ่ายใบสมัครงาน, PDF เรซูเม่, บัตรประชาชน)", type=["png", "jpg", "jpeg", "pdf"])
+    # ปรับตรงนี้ให้รองรับปุ่มอัปโหลดครอบคลุม .xlsx แล้ว
+    input_file = st.file_uploader(
+        "อัปโหลดเอกสารต้นทาง (รองรับ รูปถ่าย, PDF และไฟล์ Excel .xlsx)", 
+        type=["png", "jpg", "jpeg", "pdf", "xlsx"]
+    )
 
     if input_file is not None:
-        # เซฟไฟล์ชั่วคราวลงเครื่อง
         temp_input_path = os.path.join(OUTPUT_DIR, input_file.name)
         with open(temp_input_path, "wb") as f:
             f.write(input_file.getbuffer())
@@ -156,18 +160,16 @@ else:
         if st.button("🚀 เริ่มต้นดึงข้อมูลและสร้างเอกสารอัตโนมัติ"):
             with st.status("🤖 กำลังประมวลผลระบบอัตโนมัติ...", expanded=True) as status:
                 
-                # ข้อ 1 & 4: ระบบรันอัตโนมัติแทนคน
-                status.write("⏳ 1. กำลังอ่านข้อความจากไฟล์เอกสาร (OCR)...")
+                status.write("⏳ 1. กำลังอ่านข้อมูลจากไฟล์นำเข้า (ภาพ/PDF/Excel)...")
                 raw_text = extract_text_from_file(temp_input_path)
                 
                 status.write("🧠 2. กำลังส่งให้ Open-Source AI วิเคราะห์ดึงข้อมูลสำคัญ...")
                 extracted_json = extract_data_with_ai(raw_text, fields_list)
                 
                 if extracted_json:
-                    status.write("📝 3. ข้อมูลที่ AI ดึงมาได้ (กำลังกรอกลงเทมเพลต):")
+                    status.write("📝 3. ข้อมูลที่ AI จับคู่ได้สำเร็จ:")
                     status.json(extracted_json)
                     
-                    # กำหนดชื่อไฟล์ผลลัพธ์
                     output_filename = f"Filled_{selected_template}"
                     output_path = os.path.join(OUTPUT_DIR, output_filename)
                     template_path = os.path.join(TEMPLATE_DIR, selected_template)
@@ -177,8 +179,7 @@ else:
                     
                     status.update(label="🎉 ดำเนินการสำเร็จเรียบร้อย!", state="complete", expanded=True)
                     
-                    # แสดงปุ่มให้ดาวน์โหลดผลลัพธ์
-                    st.success(f"สร้างเอกสารสำเร็จตามเทมเพลตที่ตั้งไว้!")
+                    st.success(f"สร้างเอกสารสำเร็จตามเทมเพลตเรียบร้อย!")
                     with open(output_path, "rb") as file:
                         st.download_button(
                             label="📥 ดาวน์โหลดเอกสารสำเร็จรูป (.docx)",
@@ -188,4 +189,4 @@ else:
                         )
                 else:
                     status.update(label="❌ การดึงข้อมูลผิดพลาด", state="error")
-                    st.error("AI ไม่สามารถอ่านข้อมูลหรือแปลงเป็น JSON ได้ กรุณาลองใหม่อีกครั้ง")
+                    st.error("AI ไม่สามารถประมวลผลไฟล์นี้ได้ กรุณาลองใหม่อีกครั้ง")
